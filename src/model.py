@@ -9,16 +9,6 @@ import torch.distributed as dist
 from torch import Tensor
 
 
-class GPTConfig():
-    block_size: int = 1024
-    vocab_size: int = 50304
-    n_layer: int = 12
-    n_head: int = 8
-    n_embed: int = 768
-    dropout: float = 0.1
-    bias: bool = True
-
-
 def clone(layer, n_layer):
     return nn.ModuleList([copy.deepcopy(layer) for _ in range(n_layer)])
 
@@ -56,6 +46,7 @@ class AddNorm(nn.Module):
 
 
 class PositionEncoding(nn.Module):
+    """fixed position encoding implementation"""
     def __init__(self, d_model: int, dropout, max_length = 1000):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -64,17 +55,16 @@ class PositionEncoding(nn.Module):
         divide_term = torch.exp( 
             torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model)
         )
-        pe[:, 0::2] = math.sin(pos * divide_term)
-        pe[:, 1::2] = math.cos(pos * divide_term)
+        pe[:, 0::2] = torch.sin(pos * divide_term)
+        pe[:, 1::2] = torch.cos(pos * divide_term)
         pe = pe.unsqueeze(0)
         self.register_buffer("pe", pe)
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         x = x + self.pe[:, : x.size(1)].requires_grad_(False)
         return self.dropout(x)
 
 
-# TODO: add regularization: attention, residual (where)
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, n_head: int, n_embed: int, bias: bool = True):
         super().__init__()
@@ -87,7 +77,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.n_embed = n_embed
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor, mask = None) -> Tensor:
-        B, L, E = query.size()                                                         # batch size, sequence length, embedding size
+        B, L, E = query.size()                                                         # (batch size, sequence length, embedding size)
         q, k, v = self.W_Q(query), self.W_V(key), self.W_K(value)
         q = q.view(B, L, self.n_head, self.n_embed // self.n_head).transpose(1, 2) # B * H * L * (E // H)
         k = k.view(B, L, self.n_head, self.n_embed // self.n_head).transpose(1, 2) # B * H * L * (E // H)
@@ -107,6 +97,7 @@ class MultiHeadSelfAttention(nn.Module):
 
 class PositionwiseFeedforward(nn.Module):
     def __init__(self, size, hid_size, dropout: float = 0.1):
+        super().__init__()
         self.layer1 = nn.Linear(size, hid_size)
         self.layer2 = nn.Linear(hid_size, size)
         self.dropout = nn.Dropout(dropout)
@@ -132,6 +123,7 @@ class Encoder(nn.Module):
 class TransformerEncoderLayer(nn.Module):
     """encoder layer consists of self attention layer and feedforward layer"""
     def __init__(self, size, self_attn: MultiHeadSelfAttention, feed_forward: PositionwiseFeedforward, dropout: float):
+        super().__init__()
         self.size = size
         self.self_attn = self_attn
         self.feed_forward = feed_forward
@@ -158,6 +150,7 @@ class Decoder(nn.Module):
 
 class TransformerDecoderLayer(nn.Module):
     def __init__(self, size: int, masked_attn: MultiHeadSelfAttention, self_attn: MultiHeadSelfAttention, feed_forward: PositionwiseFeedforward, dropout: float = 0.1):
+        super().__init__()
         self.size = size
         self.masked_attn = masked_attn
         self.self_attn = self_attn
@@ -200,37 +193,37 @@ class Generator(nn.Module):
         return F.log_softmax(self.layer(x), dim=-1)
 
 
-class TransformerBlock(nn.Module):
-    def __init__(
-        self, 
-        src_vocab: int, 
-        tgt_vocab, N: int = 6, 
-        d_model: int = 512, 
-        hid_size: int = 2048, 
-        n_head: int = 8, 
-        dropout: float = 0.1
-    ):
-        """
-        hid_size: size of hidden layer in feed forward block
-        """
-        super().__init__()
-        c = copy.deepcopy
-        attn = MultiHeadSelfAttention(n_head, d_model)
-        feed_forward = PositionwiseFeedforward(d_model, hid_size, dropout)
-        position = PositionEncoding(d_model, dropout)
-        self.model = EncoderDecoder(
-            encoder=TransformerEncoderLayer(d_model, c(attn), c(feed_forward), dropout),
-            decoder=TransformerDecoderLayer(d_model, c(attn), c(attn), c(feed_forward), dropout),
-            src_embdd=nn.Sequential(nn.Embedding(d_model, src_vocab), c(position)),
-            tgt_embed=nn.Sequential(nn.Embedding(d_model, tgt_vocab), c(position)),
-            generator=Generator(d_model, tgt_vocab),
-        )
 
-        del attn
-        del feed_forward
-        del position
-        # initial parameters for the model
-        for p in self.model.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+def build_model(
+    self, 
+    src_vocab: int, 
+    tgt_vocab, N: int = 6, 
+    d_model: int = 512, 
+    hid_size: int = 2048, 
+    n_head: int = 8, 
+    dropout: float = 0.1
+):
+    """
+    hid_size: size of hidden layer in feed forward block
+    """
+    c = copy.deepcopy
+    attn = MultiHeadSelfAttention(n_head, d_model)
+    feed_forward = PositionwiseFeedforward(d_model, hid_size, dropout)
+    position = PositionEncoding(d_model, dropout)
+    model = EncoderDecoder(
+        encoder=TransformerEncoderLayer(d_model, c(attn), c(feed_forward), dropout),
+        decoder=TransformerDecoderLayer(d_model, c(attn), c(attn), c(feed_forward), dropout),
+        src_embdd=nn.Sequential(nn.Embedding(d_model, src_vocab), c(position)),
+        tgt_embed=nn.Sequential(nn.Embedding(d_model, tgt_vocab), c(position)),
+        generator=Generator(d_model, tgt_vocab),
+    )
 
+    del attn
+    del feed_forward
+    del position
+    # initial parameters for the model
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
+
+    return model

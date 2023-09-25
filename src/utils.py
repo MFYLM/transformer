@@ -33,3 +33,9 @@ class Batch:
     # @staticmethod
     # def 
 
+
+def generate_mask(size: int):
+    """genenerate mask to prevent model to look up the future"""
+    attn_shape = (1, size, size)
+    mask = torch.triu(torch.ones(attn_shape), diagonal=1).type(dtype=torch.uint8)
+    return mask == 0
